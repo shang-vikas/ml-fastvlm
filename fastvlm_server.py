@@ -23,7 +23,7 @@ logger = logging.getLogger("FastVLMHTTP")
 # App + Engine
 # -----------------------
 app = Flask(__name__)
-executor = ThreadPoolExecutor(max_workers=int(os.getenv("FASTVLM_WORKERS", "4")))
+executor = ThreadPoolExecutor(max_workers=int(os.getenv("FASTVLM_WORKERS", "1")))
 
 cfg = load_fastvlm_config()
 engine = FastVLMEngine(cfg)

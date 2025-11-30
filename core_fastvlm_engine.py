@@ -1,4 +1,5 @@
 # core_fastvlm_engine.py
+import gc
 import os
 import time
 import json
@@ -506,6 +507,7 @@ class FastVLMEngine:
         t_frame_start = time.perf_counter()
         raw_frames = extract_key_frames(video_path, scenes, self.cfg.max_resolution)
         frames = deduplicate_frames(raw_frames, self.cfg.frame_similarity_threshold)
+        del raw_frames
 
         # Cap max frames
         if len(frames) > self.cfg.max_frames:
@@ -542,7 +544,7 @@ class FastVLMEngine:
 
         total = time.perf_counter() - t0
 
-        return VideoSummaryResult(
+        result = VideoSummaryResult(
             summary=summary,
             analysis=analysis,
             visual_tags=visual_tags,
@@ -559,3 +561,13 @@ class FastVLMEngine:
                 "summary_sec": t_sum,
             },
         )
+
+        # Aggressive cleanup
+        del frames, captions, scenes, caption_texts
+        gc.collect()
+        if self.cfg.device == "cuda":
+            torch.cuda.empty_cache()
+
+
+
+        return result
