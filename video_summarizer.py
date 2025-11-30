@@ -199,3 +199,43 @@ def summarize_video_stream_endpoint():
 # ----------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=7860, threaded=True)
+
+
+
+
+# 1. objective read the mongo collection
+# 2. read the assets array
+# 3. each asset in array will have processing flag, take only the ones which have processed= True.
+# 4. Each asset in array will have the location of file(image/video).
+# 5. Download that asset, make a request to localhost:7806(/summarize_video, /image) appropriately.
+# 6. Take that data and update each asset in array with the response.
+
+# I want to create a small folder and class based code for this. ask me more info before giving scaffoling
+
+
+
+# database - pugsy_ai, collection_name - posts. connecting from one vm to another(mongo db). 
+# @app.route("/predict_image", methods=["POST"])
+# @app.route("/summarize_video", methods=["POST"])
+#  Create new fields inside each element of array object.
+# - Do we update Mongo immediately per asset: per asset.
+# Python version and major libraries (e.g., pymongo, requests)? - python3.10
+# Should the folder/class structure be production-grade (with config/env separation and logging) - yes config and logging, but minimal mvp setup.
+
+# 1. mongodb://user:pass@ip:port/db , use this
+# 2. use - config.toml
+# 3. Will the posts collection’s schema look roughly like this? -> Give me query to run,  i will give you result sample
+# .4 
+# # curl -X POST http://localhost:7860/predict \
+# #      -H "Content-Type: application/json" \
+# #      -d '{"image_path": "/home/shang/dev/test_assets/styles/combined.png", "prompt": "What is happening in this image?"}'
+
+# # curl -X POST http://127.0.0.1:7860/summarize_video \
+# #      -H "Content-Type: application/json" \
+# #      -d '{
+# #            "video_path": "/home/shang/dev/test_assets/DQKRRwvDAY0__asset_1.mp4",
+# #            "scene_threshold": 25.0
+# #          }'
+
+# 5. {"status": "processing", "step": "scene_detection"}
+# {"summary": "The main subject is a woman with red hair, wearing a gray tank top, applying a white substance to her face. The text on the image reads \"day 23 halloween look\" and \"MAD HATTER \". The woman appears to be in a bathroom, as indicated by the presence of a mirror and a shower curtain in the background. The woman is holding a pink makeup brush in her right hand and applying ...", "analysis": {"subject": "woman with red hair", "action": "applying white substance to face", "tone": "creative", "likely_intent": "costume preparation"}, "scenes_detected": 4, "frames_used": 4, "captions": ["The main subject is a woman with red hair, wearing a gray tank top, applying a white substance to her face. The text on the image reads \"day 23 halloween look\" and \"MAD HATTER \ud83d\ude02\".", "The image depicts a woman with red hair, wearing a gray tank top, applying a white substance to her face. The text on the image reads \"day 23 halloween look\" and \"MAD HATTER \ud83d\ude02\". The woman appears to be in a bathroom, as indicated by the presence of a mirror and a shower curtain in the background. The woman is holding a pink makeup brush in her right hand and applying a white substance, likely a face mask or powder, to her face. The overall mood of the image is playful and humorous, as suggested by the text \"MAD HATTER \ud83d\ude02\".", "The image depicts a woman with red hair, wearing a gray tank top, applying a white substance to her face. The text on the image reads \"day 23 halloween look\" and \"MAD HATTER \ud83d\ude02\". The woman appears to be in a bathroom, as indicated by the presence of a mirror and a shower curtain in the background. The woman is holding a pink makeup brush in her right hand and applying a white substance, likely a face mask or powder, to her face. The overall mood of the image is playful and humorous, as suggested by the text \"MAD HATTER \ud83d\ude02\".", "The image depicts a woman with red hair, wearing a gray tank top, applying a white substance to her face. The woman appears to be in a bathroom, as indicated by the presence of a mirror and a shower curtain in the background. The woman is holding a pink makeup brush in her right hand and applying a white substance, likely a face mask or powder, to her face. The overall mood of the image is playful and humorous, as suggested by the text \"day 23 halloween look\" and \"MAD HATTER \ud83d\ude02\". The woman appears to be in a bathroom, as indicated by the presence of a mirror and a shower curtain in the background. The woman is holding a pink makeup brush in her right hand and applying a white substance, likely a face mask or powder, to her face. The overall mood of the image is playful and humorous, as suggested by the text \"MAD HATTER \ud83d\ude02\"."], "timing": {"scene_detection_sec": 4.88, "frame_extraction_sec": 1.5, "captioning_sec": 22.24, "total_sec": 41.46}}

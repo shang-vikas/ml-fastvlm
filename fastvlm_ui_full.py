@@ -37,7 +37,8 @@ except Exception:
     pass
 
 # ---------- Device ----------
-DEVICE = "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
+# DEVICE = "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
+DEVICE = 'cpu'
 print(f"Using device: {DEVICE.upper()}")
 
 # ---------- Model loading (change MODEL_PATH to your checkpoint) ----------
