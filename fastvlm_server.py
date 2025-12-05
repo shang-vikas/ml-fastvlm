@@ -7,6 +7,7 @@ from flask import Flask, jsonify, request
 
 from .core_fastvlm_engine import FastVLMEngine
 from .fastvlm_config import load_fastvlm_config
+from .tmp_media import TempMedia
 
 # -----------------------
 # Logging
@@ -68,14 +69,19 @@ def predict_image():
     if not image_path:
         return error_response("Missing 'image_path'", 400)
 
-    if not os.path.exists(image_path):
-        return error_response(f"Image not found at path: {image_path}", 400)
-
     logger.info("predict_image called for %s", image_path)
-
-    future = executor.submit(engine.describe_image, image_path, prompt)
     try:
-        output = future.result()
+        with TempMedia(image_path) as local_path:
+            future = executor.submit(engine.describe_image, local_path, prompt)
+            output = future.result()
+    except ValueError as e:
+        # e.g. download too large
+        logger.exception("Validation/download error in predict_image")
+        return error_response(str(e), 400)
+    except RuntimeError as e:
+        # missing deps or config
+        logger.exception("Runtime error in predict_image")
+        return error_response(str(e), 500)
     except FileNotFoundError as e:
         logger.exception("File not found error in predict_image")
         return error_response(str(e), 400)
@@ -93,7 +99,7 @@ def predict_image():
 
 
 # -----------------------
-# Video summarization
+# Video summarization (Stage-0)
 # -----------------------
 @app.route("/summarize_video", methods=["POST"])
 def summarize_video():
@@ -106,38 +112,45 @@ def summarize_video():
     if not video_path:
         return error_response("Missing 'video_path'", 400)
 
-    if not os.path.exists(video_path):
-        return error_response(f"Video not found at path: {video_path}", 400)
-
     logger.info("summarize_video called for %s", video_path)
 
-    # NOTE: You can add per-request overrides for cfg here if you really want,
-    # but for MVP we just use the engine config.
-    future = executor.submit(engine.summarize_video, video_path)
-
     try:
-        result = future.result()
+        with TempMedia(video_path) as local_path:
+            future = executor.submit(engine.summarize_video, local_path)
+            video_result = future.result()
     except ValueError as e:
-        # e.g., video too long, invalid
-        logger.exception("Validation error in summarize_video")
+        logger.exception("Validation/download error in summarize_video")
         return error_response(str(e), 400)
+    except RuntimeError as e:
+        logger.exception("Runtime error in summarize_video")
+        return error_response(str(e), 500)
     except Exception as e:
         logger.exception("Unhandled error in summarize_video")
         return error_response(str(e), 500, code="internal_error")
 
-    return jsonify(
-        {
-            "summary": result.summary,
-            "analysis": result.analysis,
-            "visual_tags": result.visual_tags,
-            "vibe_tags": result.vibe_tags,
-            "safety_flags": result.safety_flags,
-            "scenes_detected": result.scenes_detected,
-            "frames_used": result.frames_used,
-            "captions": result.captions,
-            "timing": result.timing,
-        }
-    )
+    # Compose a stable payload for clients. Keep HTTP 200 for success,
+    # but include a flag that says whether structured output was produced.
+    fastvlm_obj = getattr(video_result, "fastvlm", None)
+    diagnostics = getattr(video_result, "fastvlm_diagnostics", None)
+
+    payload = {
+        "structured_available": bool(fastvlm_obj),
+        "fastvlm": fastvlm_obj,            # may be None during Stage-0
+        "diagnostics": diagnostics,         # may be None
+        "summary": video_result.summary,
+        "visual_tags": video_result.visual_tags,
+        "vibe_tags": video_result.vibe_tags,
+        "safety_flags": video_result.safety_flags,
+        "scenes_detected": video_result.scenes_detected,
+        "frames_used": video_result.frames_used,
+        "captions": video_result.captions,
+        "timing": video_result.timing,
+        # stage hooks
+        "category": getattr(video_result, "category", None),
+        "tags": getattr(video_result, "tags", None),
+    }
+
+    return jsonify(payload), 200
 
 
 if __name__ == "__main__":

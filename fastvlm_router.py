@@ -40,7 +40,7 @@ MAX_WORKERS = int(os.getenv("FASTVLM_MAX_WORKERS", "3"))
 PYTHON_BIN = os.getenv("FASTVLM_PYTHON_BIN", "python3")
 SERVER_MODULE = os.getenv(
     "FASTVLM_SERVER_MODULE",
-    "pugsy_ai.pipelines.vlm_pipeline.fastvlm.ml-fastvlm.fastvlm_server",
+    "pugsy_ai.pipelines.vlm_pipeline.fastvlm.ml_fastvlm.fastvlm_server",
 )
 MAX_CONCURRENT_PER_WORKER = int(os.getenv("FASTVLM_MAX_CONCURRENT_PER_WORKER", "2"))
 
@@ -415,4 +415,4 @@ if __name__ == "__main__":
 #     data = resp.json()
 #     if data.get("error", {}).get("code") == "workers_busy":
 #         time.sleep(data["error"].get("retry_after_sec", 5))
-#         # then retry or bubble this up with a clear message 
+#         # then retry or bubble this up with a clear message
