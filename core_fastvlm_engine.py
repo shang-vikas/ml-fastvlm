@@ -10,7 +10,7 @@ This file is intentionally minimal for Stage-0:
 It includes small, well-documented hooks for Stage-1 (category/classifier)
 and Stage-2 (category-specific tagger) so those can be added later.
 """
-
+import json
 import gc
 import os
 import time
@@ -123,6 +123,69 @@ def check_layers(model: torch.nn.Module) -> None:
 _summarizer = None
 _analyzer = None
 
+COLLAGE_SUMMARY_PROMPT = (
+"""You are given an image containing four frames from the same video,
+arranged in chronological order from earliest to latest.
+
+Summarize what happens in the video based on these frames.
+Focus on actions and activities.
+Do not describe the image layout or the frames individually.
+Write one concise summary sentence."""
+)
+
+COLLAGE_SUMMARY_PROMPT_v1 = (
+    """You are given an image containing multiple moments from a video,
+ordered from earlier to later.
+
+Describe what is happening in the video.
+Focus on visible actions and changes only.
+Do not infer intent, emotion, or meaning.
+Write one concise sentence."""
+)
+
+
+COLLAGE_SUMMARY_PROMPT_v2 = ("""You are given an image containing multiple frames from the same video,
+arranged from earlier to later.
+
+Task:
+1. Describe the visible actions or activities.
+2. List any clearly visible on-screen text exactly as written.
+3. Do NOT infer motivation, meaning, or transformation.
+4. Do NOT summarize or explain the message.
+
+Return your answer in JSON with keys:
+- "visible_text": list of strings
+- "actions": list of short phrases
+                             
+Rules:
+- Do NOT infer intent, motivation, or meaning.
+- Do NOT merge text into sentences.
+- Do NOT explain the image.
+- Output valid JSON only. No extra text.
+""")
+
+
+COLLAGE_SUMMARY_PROMPT_v3 = """
+You are given an image containing multiple moments from a video,
+ordered from earlier to later.
+
+Extract only what is directly visible.
+
+Return a JSON object with exactly these fields:
+- "visible_text": list of all readable on-screen text (captions, overlays, titles)
+- "actions": list of physical actions that are visually observable
+  (e.g. walking, lifting, speaking into a microphone)
+
+Rules:
+- If no physical actions are visible, return an empty list for "actions"
+- Do NOT convert text into actions
+- Do NOT infer intent, transformation, or meaning
+- Do NOT describe layout or camera angles
+- Output valid JSON only
+"""
+
+
+
 def get_summarizer(device: str):
     global _summarizer
     if _summarizer is not None:
@@ -154,33 +217,103 @@ def get_summarizer(device: str):
             _summarizer = None
     return _summarizer
 
+def dedup_events(captions: list[str]) -> list[str]:
+    events = []
+    last = None
+
+    for c in captions:
+        c = c.strip()
+        if not c:
+            continue
+
+        # normalize lightly
+        norm = c.lower()
+        norm = norm.replace("a person", "").replace("the person", "")
+        norm = norm.replace("someone", "").strip()
+
+        if norm == last:
+            continue
+
+        events.append(c)
+        last = norm
+
+    return events
+
+
+# def summarize_captions(cfg: FastVLMConfig, captions: List[str]) -> str:
+#     """
+#     Turn per-frame captions (list of strings) into a short video-level summary.
+#     If cfg.enable_summary is False or no summarizer available, returns a safe join/truncate.
+#     """
+#     if not cfg.enable_summary or not captions:
+#         return " ".join(captions).strip()
+
+#     summarizer = get_summarizer(cfg.device)
+#     if summarizer is None:
+#         # fallback: naive join + truncate
+#         joined = " ".join(captions)
+#         return joined[: cfg.max_context_chars].strip()
+
+#     joined = " ".join(captions)
+#     if len(joined) > cfg.max_context_chars:
+#         joined = joined[: cfg.max_context_chars]
+
+#     prompt = f"Summarize what is happening in this short social media video:\n{joined}"
+#     try:
+#         out = summarizer(prompt, max_new_tokens=64, num_return_sequences=1)[0]
+#         summary = out.get("generated_text") or out.get("summary_text") or ""
+#         return summary.strip()
+#     except Exception:
+#         logger.exception("Summarizer pipeline failed; returning truncated join.")
+#         return joined[: cfg.max_context_chars].strip()
 
 def summarize_captions(cfg: FastVLMConfig, captions: List[str]) -> str:
-    """
-    Turn per-frame captions (list of strings) into a short video-level summary.
-    If cfg.enable_summary is False or no summarizer available, returns a safe join/truncate.
-    """
-    if not cfg.enable_summary or not captions:
-        return " ".join(captions).strip()
+    if not captions:
+        return ""
+
+    # 1. Deduplicate into events
+    events = dedup_events(captions)
+
+    if not events:
+        return ""
+
+    # 2. Keep last N events (late events matter more)
+    # MAX_EVENTS = 10
+    # events = events[-MAX_EVENTS:]
+
+    # 3. Build temporal, action-biased input
+    timeline = "\n".join(
+        f"[event {i+1}] {evt}"
+        for i, evt in enumerate(events)
+    )
+
+    prompt = (
+        "The following are observations from different moments in a video.\n"
+        "Each line represents a separate event and may be incomplete.\n"
+        "Infer what happens over time.\n"
+        "Focus on actions and outcomes, not static appearance.\n"
+        "Write a concise summary of the video.\n\n"
+        f"{timeline}"
+    )
 
     summarizer = get_summarizer(cfg.device)
     if summarizer is None:
-        # fallback: naive join + truncate
-        joined = " ".join(captions)
-        return joined[: cfg.max_context_chars].strip()
+        return " ".join(events)
 
-    joined = " ".join(captions)
-    if len(joined) > cfg.max_context_chars:
-        joined = joined[: cfg.max_context_chars]
-
-    prompt = f"Summarize what is happening in this short social media video:\n{joined}"
     try:
-        out = summarizer(prompt, max_new_tokens=64, num_return_sequences=1)[0]
-        summary = out.get("generated_text") or out.get("summary_text") or ""
-        return summary.strip()
+        out = summarizer(
+            prompt,
+            max_new_tokens=64,
+            num_return_sequences=1,
+        )[0]
+        return (
+            out.get("generated_text")
+            or out.get("summary_text")
+            or ""
+        ).strip()
     except Exception:
-        logger.exception("Summarizer pipeline failed; returning truncated join.")
-        return joined[: cfg.max_context_chars].strip()
+        return " ".join(events)
+
 
 
 def get_analyzer(device: str):
@@ -332,17 +465,17 @@ class FastVLMModel:
         if isinstance(image_input, str):
             if not os.path.exists(image_input):
                 raise FileNotFoundError(f"Image path does not exist: {image_input}")
-            logger.debug("Inference on image file: %s", image_input)
+            logger.info("Inference on image file: %s", image_input)
             image = Image.open(image_input).convert("RGB")
             image_tensor = process_images([image], self.image_processor, self.model.config)[0]
 
         elif isinstance(image_input, Image.Image):
-            logger.debug("Inference on in-memory PIL image.")
+            logger.info("Inference on in-memory PIL image.")
             image = image_input.convert("RGB")
             image_tensor = process_images([image], self.image_processor, self.model.config)[0]
 
         elif isinstance(image_input, torch.Tensor):
-            logger.debug("Inference on preprocessed tensor.")
+            logger.info("Inference on preprocessed tensor.")
             image_tensor = image_input
         else:
             raise TypeError(
@@ -383,7 +516,7 @@ class FastVLMModel:
             )
 
         outputs = self.tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0].strip()
-        logger.debug("Model output (truncated): %s", outputs[:400])
+        logger.info("Model output (truncated): %s", outputs[:400])
         return outputs
 
 
@@ -503,6 +636,35 @@ def deduplicate_frames(
     logger.info("Deduplicated frames: %d -> %d", len(frames), len(kept))
     return kept
 
+def build_collage(
+    frames: List[np.ndarray],
+    size: int = 512,
+) -> Image.Image:
+    """
+    Build a 2x2 collage from up to 4 RGB frames.
+    Layout:
+      [0 | 1]
+      [2 | 3]
+    """
+    imgs = []
+
+    for f in frames[:4]:
+        img = Image.fromarray(f)
+        img = img.resize((size, size), Image.BILINEAR)
+        imgs.append(img)
+
+    # pad if fewer than 4
+    while len(imgs) < 4:
+        imgs.append(imgs[-1])
+
+    collage = Image.new("RGB", (size * 2, size * 2))
+    collage.paste(imgs[0], (0, 0))
+    collage.paste(imgs[1], (size, 0))
+    collage.paste(imgs[2], (0, size))
+    collage.paste(imgs[3], (size, size))
+
+    return collage
+
 
 # -----------------------
 # Small helpers for stage-0
@@ -514,6 +676,193 @@ def sanitize_caption(text: str, max_chars: int = 1024) -> str:
     if len(s) > max_chars:
         s = s[: max_chars - 3] + "..."
     return s
+
+def frame_motion_score(a: np.ndarray, b: np.ndarray) -> float:
+    a = cv2.resize(a, (64, 64))
+    b = cv2.resize(b, (64, 64))
+    diff = np.mean(np.abs(a.astype(np.float32) - b.astype(np.float32))) / 255.0
+    return float(diff)
+
+def select_motion_keyframes(
+    video_path: str,
+    scenes: List[Tuple[int, int]],
+    stats: Dict[str, float],
+    max_resolution: int,
+    scene_sample_rate: int,
+    motion_threshold: float,
+    min_scene_duration_sec: float,
+    max_frames: int,
+    max_frames_per_scene: int = 2,
+) -> List[Tuple[float, np.ndarray]]:
+    """
+    Motion-prioritized but scene-safe keyframe selection.
+
+    Strategy:
+    1. Always keep ONE anchor frame per valid scene (scene midpoint)
+    2. Add motion frames on top (ranked by motion)
+    3. Preserve temporal order
+    4. Enforce global max_frames by dropping lowest-motion frames
+    """
+
+    cap = cv2.VideoCapture(video_path)
+    fps = stats.get("fps", 1) or 1
+
+    # (timestamp, frame, motion_score)
+    selected: List[Tuple[float, np.ndarray, float]] = []
+
+    logger.info(
+        "motion_select:start scenes=%d sample_rate=%d motion_th=%.3f max_frames=%d",
+        len(scenes),
+        scene_sample_rate,
+        motion_threshold,
+        max_frames,
+    )
+
+    for scene_id, (start, end) in enumerate(scenes):
+        duration = (end - start) / fps
+        if duration < min_scene_duration_sec:
+            logger.info(
+                "scene %d skipped (duration %.2fs < %.2fs)",
+                scene_id,
+                duration,
+                min_scene_duration_sec,
+            )
+            continue
+
+        # --------------------------------------------------
+        # 1️⃣ Anchor frame (always keep one per scene)
+        # --------------------------------------------------
+        mid_idx = int((start + end) / 2)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, mid_idx)
+        ok, anchor = cap.read()
+
+        if ok and anchor is not None:
+            ts = mid_idx / fps
+            h, w = anchor.shape[:2]
+            scale = min(1.0, max_resolution / max(h, w))
+            if scale < 1.0:
+                anchor = cv2.resize(anchor, (int(w * scale), int(h * scale)))
+
+            selected.append((ts, anchor, 0.0))
+            logger.debug("scene %d anchor kept @ %.2fs", scene_id, ts)
+
+        # --------------------------------------------------
+        # 2️⃣ Motion frames (additive, not mandatory)
+        # --------------------------------------------------
+        idxs = np.linspace(start, end - 1, scene_sample_rate, dtype=int)
+        prev = None
+        scene_motion: List[Tuple[float, np.ndarray, float]] = []
+
+        for idx in idxs:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                continue
+
+            ts = idx / fps
+
+            h, w = frame.shape[:2]
+            scale = min(1.0, max_resolution / max(h, w))
+            if scale < 1.0:
+                frame = cv2.resize(frame, (int(w * scale), int(h * scale)))
+
+            if prev is None:
+                prev = frame
+                continue
+
+            motion = frame_motion_score(prev, frame)
+            prev = frame
+
+            if motion >= motion_threshold:
+                scene_motion.append((ts, frame, motion))
+
+        logger.info(
+            "scene %d motion_candidates=%d",
+            scene_id,
+            len(scene_motion),
+        )
+
+        # keep top-N motion frames *per scene*
+        scene_motion.sort(key=lambda x: x[2], reverse=True)
+        scene_motion = scene_motion[: max_frames_per_scene - 1]
+
+        # restore temporal order
+        scene_motion.sort(key=lambda x: x[0])
+
+        selected.extend(scene_motion)
+
+    cap.release()
+
+    logger.info("motion_select:before_global selected=%d", len(selected))
+
+    # --------------------------------------------------
+    # 3️⃣ Preserve temporal order globally
+    # --------------------------------------------------
+    selected.sort(key=lambda x: x[0])
+
+    # --------------------------------------------------
+    # 4️⃣ Enforce global frame budget (drop lowest-motion)
+    # --------------------------------------------------
+    if len(selected) > max_frames:
+        ranked = sorted(
+            enumerate(selected),
+            key=lambda x: x[1][2],  # x[1] = (ts, frame, motion_score)
+            reverse=True,
+        )
+
+
+        keep_indices = set(idx for idx, _ in ranked[:max_frames])
+        dropped = len(selected) - len(keep_indices)
+
+        selected = [
+            frame for idx, frame in enumerate(selected)
+            if idx in keep_indices
+        ]
+
+        logger.info(
+            "motion_select:global_drop dropped=%d kept=%d",
+            dropped,
+            len(selected),
+        )
+
+    logger.info(
+        "motion_select:final frames=%d timestamps=%s",
+        len(selected),
+        [round(ts, 2) for ts, _, _ in selected],
+    )
+
+    # return (timestamp, frame)
+    return [(ts, frame) for ts, frame, _ in selected]
+
+
+def build_collages_from_frames(
+    frames: List[Tuple[float, np.ndarray]],
+    frames_per_collage: int,
+    max_collages: int,
+) -> List[Dict[str, Any]]:
+
+    collages = []
+
+    for i in range(0, len(frames), frames_per_collage):
+        if len(collages) >= max_collages:
+            break
+
+        chunk = frames[i : i + frames_per_collage]
+
+        rgb_imgs = [
+            cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            for _, frame in chunk
+        ]
+
+        collage_img = build_collage(rgb_imgs)
+
+        collages.append({
+            "image": collage_img,
+            "start_sec": float(min(ts for ts, _ in chunk)),
+            "end_sec": float(max(ts for ts, _ in chunk)),
+        })
+
+    return collages
 
 
 # -----------------------
@@ -765,3 +1114,275 @@ class FastVLMEngine:
             torch.cuda.empty_cache()
 
         return result
+
+
+    def summarize_video_collage_old(self, video_path: str) -> VideoSummaryResult:
+        t0 = time.perf_counter()
+
+        stats = get_video_stats(video_path)
+        duration = stats.get("duration_sec", 0.0)
+
+        if duration > self.cfg.max_video_seconds:
+            raise ValueError(
+                f"Video too long: {duration:.1f}s > {self.cfg.max_video_seconds:.1f}s"
+            )
+
+        # Scene detection
+        scenes = extract_scenes(video_path, self.cfg.scene_threshold)
+
+        # Fallback: single scene
+        if not scenes:
+            scenes = [(0, int(stats["frame_count"]))]
+
+        # Extract frames (reuse existing logic)
+        raw_frames = extract_key_frames(
+            video_path,
+            scenes,
+            self.cfg.max_resolution,
+        )
+
+        if not raw_frames:
+            return VideoSummaryResult(
+                summary="",
+                analysis=None,
+                visual_tags=[],
+                vibe_tags=[],
+                safety_flags=[],
+                scenes_detected=len(scenes),
+                frames_used=0,
+                captions=[],
+                timing={"total_sec": time.perf_counter() - t0},
+                diagnostics={"note": "no_frames"},
+            )
+
+        # --- Select up to 4 temporally spaced frames ---
+        frames_rgb = []
+        idxs = np.linspace(0, len(raw_frames) - 1, min(4, len(raw_frames)), dtype=int)
+
+        for i in idxs:
+            _, frame_bgr = raw_frames[i]
+            rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+            frames_rgb.append(rgb)
+
+        collage_img = build_collage(frames_rgb)
+
+        # --- Single FastVLM call ---
+        try:
+            summary = self.model.predict(
+                collage_img,
+                prompt=COLLAGE_SUMMARY_PROMPT,
+                conv_mode="qwen_2",
+                temperature=0.0,
+                max_new_tokens=96,
+            )
+        except Exception:
+            logger.exception("Collage summarization failed")
+            summary = ""
+
+        total = time.perf_counter() - t0
+
+        return VideoSummaryResult(
+            summary=summary.strip(),
+            analysis=None,
+            visual_tags=[],
+            vibe_tags=[],
+            safety_flags=[],
+            scenes_detected=len(scenes),
+            frames_used=len(frames_rgb),
+            captions=[],  # no per-frame captions in collage mode
+            timing={
+                "total_sec": total,
+            },
+            diagnostics={
+                "mode": "collage_summary",
+                "frames_used": len(frames_rgb),
+            },
+        )
+
+
+    def summarize_video_collage(self, video_path: str) -> VideoSummaryResult:
+        logger.info("summarize_video_collage:start video=%s", video_path)
+
+        stats_log = {
+            "scenes_detected": 0,
+            "frames_selected": 0,
+            "frames_used": 0,
+            "frames_dropped": 0,
+            "collages_built": 0,
+        }
+
+        t0 = time.perf_counter()
+        stats = get_video_stats(video_path)
+
+        logger.info(
+            "video_stats fps=%.2f frames=%d duration=%.2fs",
+            stats.get("fps", 0),
+            stats.get("frame_count", 0),
+            stats.get("duration_sec", 0.0),
+        )
+
+        # ---------------------------
+        # Scene detection
+        # ---------------------------
+        scenes = extract_scenes(video_path, self.cfg.scene_threshold)
+        stats_log["scenes_detected"] = len(scenes)
+
+        logger.info("scenes_detected count=%d scenes=%s", len(scenes), scenes)
+
+        if not scenes:
+            scenes = [(0, int(stats["frame_count"]))]
+            logger.info("no scenes detected, using fallback full-video scene")
+
+        # ---------------------------
+        # Frame budget
+        # ---------------------------
+        max_frames = self.cfg.max_collages * self.cfg.frames_per_collage
+        logger.info(
+            "frame_budget max_frames=%d (max_collages=%d × frames_per_collage=%d)",
+            max_frames,
+            self.cfg.max_collages,
+            self.cfg.frames_per_collage,
+        )
+
+        # ---------------------------
+        # Motion-based frame selection
+        # ---------------------------
+        frames = select_motion_keyframes(
+            video_path=video_path,
+            scenes=scenes,
+            stats=stats,
+            max_resolution=self.cfg.max_resolution,
+            scene_sample_rate=self.cfg.scene_sample_rate,
+            motion_threshold=self.cfg.motion_threshold,
+            min_scene_duration_sec=self.cfg.min_scene_duration_sec,
+            max_frames=max_frames,
+        )
+
+        stats_log["frames_selected"] = len(frames)
+
+        logger.info(
+            "motion_frames_selected count=%d timestamps=%s",
+            len(frames),
+            [round(ts, 2) for ts, _ in frames],
+        )
+
+        if not frames:
+            logger.warning("no motion frames selected, returning empty result")
+            return VideoSummaryResult(
+                summary="",
+                analysis=None,
+                visual_tags=[],
+                vibe_tags=[],
+                safety_flags=[],
+                scenes_detected=len(scenes),
+                frames_used=0,
+                captions=[],
+                timing={"total_sec": time.perf_counter() - t0},
+                diagnostics={"note": "no_motion_frames"},
+            )
+
+        # ---------------------------
+        # Build collages (order-preserving)
+        # ---------------------------
+        collages = build_collages_from_frames(
+            frames,
+            frames_per_collage=self.cfg.frames_per_collage,
+            max_collages=self.cfg.max_collages,
+        )
+
+        stats_log["collages_built"] = len(collages)
+        stats_log["frames_used"] = sum(
+            len(range(i * self.cfg.frames_per_collage,
+                    min((i + 1) * self.cfg.frames_per_collage, len(frames))))
+            for i in range(len(collages))
+        )
+        stats_log["frames_dropped"] = len(frames) - stats_log["frames_used"]
+
+        logger.info(
+            "collages_built=%d frames_used=%d frames_dropped=%d",
+            stats_log["collages_built"],
+            stats_log["frames_used"],
+            stats_log["frames_dropped"],
+        )
+
+        # ---------------------------
+        # Collage captioning
+        # ---------------------------
+        captions = []
+
+        for idx, c in enumerate(collages):
+            logger.info(
+                "collage[%d] start=%.2fs end=%.2fs",
+                idx,
+                c["start_sec"],
+                c["end_sec"],
+            )
+
+            try:
+                text = self.model.predict(
+                    c["image"],
+                    prompt=COLLAGE_SUMMARY_PROMPT_v1,
+                    conv_mode="qwen_2",
+                    temperature=0.0,
+                    max_new_tokens=64,
+                )
+
+                caption_text = text.strip() if text else ""
+
+                captions.append({
+                    "collage_index": idx,
+                    "start_sec": c["start_sec"],
+                    "end_sec": c["end_sec"],
+                    "caption": caption_text,
+                })
+
+                logger.info(
+                    "collage_caption[%d] %.2f-%.2f: %s",
+                    idx,
+                    c["start_sec"],
+                    c["end_sec"],
+                    caption_text,
+                )
+
+            except Exception:
+                logger.exception("collage inference failed index=%d", idx)
+
+        # ---------------------------
+        # Build deterministic summary (timestamp join)
+        # ---------------------------
+        summary_lines = []
+        for c in captions:
+            if not c["caption"]:
+                continue
+            summary_lines.append(
+                f"[{round(c['start_sec'],1)}s-{round(c['end_sec'],1)}s] {c['caption']}"
+            )
+
+        final_summary = "\n".join(summary_lines)
+
+        logger.info(
+            "video_sampling_summary",
+            extra={
+                "video_path": video_path,
+                **stats_log,
+                "fastvlm_calls": stats_log["collages_built"],
+            },
+        )
+
+        logger.info("final_summary:\n%s", final_summary)
+
+        return VideoSummaryResult(
+            summary=final_summary,
+            analysis=None,
+            visual_tags=[],
+            vibe_tags=[],
+            safety_flags=[],
+            scenes_detected=len(scenes),
+            frames_used=stats_log["frames_used"],
+            captions=captions,
+            timing={"total_sec": time.perf_counter() - t0},
+            diagnostics={
+                "mode": "scene_motion_collage",
+                **stats_log,
+            },
+        )

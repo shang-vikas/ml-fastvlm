@@ -248,7 +248,8 @@ def summarize_video():
 
     try:
         with TempMedia(video_path) as local_path:
-            future = executor.submit(engine.summarize_video, local_path)
+            # future = executor.submit(engine.summarize_video, local_path)
+            future = executor.submit(engine.summarize_video_collage, local_path)
             video_result = future.result()
             # ---------------------------
             # Stage-1: content classification (multi-label + scores)
@@ -285,7 +286,7 @@ def summarize_video():
                 status = 200
             else:
                 # structured generation failed/was not available
-                status = 502
+                status = 200
 
             payload = {
                 "fastvlm": fastvlm_obj,

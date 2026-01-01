@@ -27,6 +27,14 @@ class FastVLMConfig:
     enable_analysis: bool = False
     log_level: str = "INFO"
 
+    # collage / sampling controls
+    max_collages: int = 4              # hard cap on VLM calls
+    frames_per_collage: int = 4        # fixed for 2x2
+    scene_sample_rate: int = 3         # frames sampled per scene
+    motion_threshold: float = 0.25     # cosine delta threshold
+    min_scene_duration_sec: float = 0.5
+
+
 
 def _bool_from_env(name: str, default: bool) -> bool:
     val = os.getenv(name)
@@ -55,20 +63,81 @@ def load_fastvlm_config(toml_path: Optional[str] = None) -> FastVLMConfig:
     cfg = FastVLMConfig(
         model_path=os.getenv("FASTVLM_MODEL_PATH", g("model_path", "")),
         device=os.getenv("FASTVLM_DEVICE", g("device", "cuda")),
-        scene_threshold=float(os.getenv("FASTVLM_SCENE_THRESHOLD", g("scene_threshold", 30.0))),
+
+        scene_threshold=float(
+            os.getenv("FASTVLM_SCENE_THRESHOLD", g("scene_threshold", 30.0))
+        ),
+
         frame_similarity_threshold=float(
             os.getenv("FASTVLM_FRAME_SIM_THRESHOLD", g("frame_similarity_threshold", 0.90))
         ),
-        max_video_seconds=float(os.getenv("FASTVLM_MAX_VIDEO_SEC", g("max_video_seconds", 90.0))),
-        max_resolution=int(os.getenv("FASTVLM_MAX_RES", g("max_resolution", 1080))),
-        max_frames=int(os.getenv("FASTVLM_MAX_FRAMES", g("max_frames", 24))),
-        max_context_chars=int(os.getenv("FASTVLM_MAX_CONTEXT_CHARS", g("max_context_chars", 256))),
-        enable_summary=_bool_from_env("FASTVLM_ENABLE_SUMMARY", g("enable_summary", True)),
-        enable_analysis=_bool_from_env("FASTVLM_ENABLE_ANALYSIS", g("enable_analysis", False)),
-        log_level=os.getenv("FASTVLM_LOG_LEVEL", g("log_level", "INFO")),
+
+        max_video_seconds=float(
+            os.getenv("FASTVLM_MAX_VIDEO_SEC", g("max_video_seconds", 90.0))
+        ),
+
+        max_resolution=int(
+            os.getenv("FASTVLM_MAX_RES", g("max_resolution", 1080))
+        ),
+
+        max_frames=int(
+            os.getenv("FASTVLM_MAX_FRAMES", g("max_frames", 24))
+        ),
+
+        max_context_chars=int(
+            os.getenv("FASTVLM_MAX_CONTEXT_CHARS", g("max_context_chars", 256))
+        ),
+
+        enable_summary=_bool_from_env(
+            "FASTVLM_ENABLE_SUMMARY",
+            g("enable_summary", True),
+        ),
+
+        enable_analysis=_bool_from_env(
+            "FASTVLM_ENABLE_ANALYSIS",
+            g("enable_analysis", False),
+        ),
+
+        log_level=os.getenv(
+            "FASTVLM_LOG_LEVEL",
+            g("log_level", "INFO"),
+        ),
+
+        # -----------------------------
+        # Collage / sampling controls
+        # -----------------------------
+
+        # Hard cap on FastVLM calls per video
+        max_collages=int(
+            os.getenv("FASTVLM_MAX_COLLAGES", g("max_collages", 5))
+        ),
+
+        # Frames per collage (2x2 grid = 4)
+        frames_per_collage=int(
+            os.getenv("FASTVLM_FRAMES_PER_COLLAGE", g("frames_per_collage", 4))
+        ),
+
+        # Frames sampled per scene *before* motion filtering
+        scene_sample_rate=int(
+            os.getenv("FASTVLM_SCENE_SAMPLE_RATE", g("scene_sample_rate", 3))
+        ),
+
+        # Motion threshold for frame-to-frame inclusion
+        motion_threshold=float(
+            os.getenv("FASTVLM_MOTION_THRESHOLD", g("motion_threshold", 0.15))
+        ),
+
+        # Ignore very short scenes (noise cuts)
+        min_scene_duration_sec=float(
+            os.getenv("FASTVLM_MIN_SCENE_DURATION_SEC", g("min_scene_duration_sec", 1.0))
+        ),
     )
 
     if not cfg.model_path:
-        raise RuntimeError("FASTVLM model_path is not configured (TOML or FASTVLM_MODEL_PATH missing).")
+        raise RuntimeError(
+            "FASTVLM model_path is not configured (TOML or FASTVLM_MODEL_PATH missing)."
+        )
 
-    return cfg
+    logger.info(f"cfg - {cfg}")
+    return  cfg
+
